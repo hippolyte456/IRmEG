@@ -9,6 +9,7 @@ from typing import List
 from mne_bids import BIDSPath
 import mne
 from mne.minimum_norm import (make_inverse_operator, apply_inverse, write_inverse_operator)
+from mne.inverse_sparse import mixed_norm 
 from mne import read_cov
 
 """
@@ -52,7 +53,15 @@ class reconstructer:
         self.method = "dSPM"
         self.snr = 3.
         self.lambda2 = 1. / self.snr ** 2
-        
+    
+    def _extract_fmri(self, fmri_path:BIDSPath):
+        # check if a fmri_path is set
+        if self.fmri_path is not None:
+            self.fmri_space = None #what funct to use ?
+        else:
+            #erreur
+            raise Exception('fmri_path not set')
+            
     
     def _path_settings(self,evoked_to_process:BIDSPath):
         # INPUTS
@@ -85,13 +94,21 @@ class reconstructer:
         fwd = mne.pick_types_forward(fwd, meg=True, eeg=False)
         return fwd
  
-    def _compute_inverse_operation(self,fwd, noise_cov):
+    def _compute_inverse_operation(self,fwd, noise_cov, use_fmri_prior=False):
         print("Inverse operator...")
         inverse_operator = make_inverse_operator(self.info, fwd, noise_cov, loose=0.2, depth=0.8)
-        stc = apply_inverse(self.evoked, inverse_operator, self.lambda2,
-                            method=self.method, pick_ori=None)
-        return stc
-          
+        if not use_fmri_prior:
+            stc = apply_inverse(self.evoked, inverse_operator, self.lambda2,
+                                method=self.method, pick_ori=None)
+        else:
+            weights = None  # Remplace par un vecteur numpy de taille (n_sources,)
+            # TODO test ...weights = np.ones(n_sources)
+            # Utilisation de MxNE avec pondération
+            alpha = 50  # Hyperparamètre de régularisation
+            stc = mixed_norm(self.evoked, fwd, noise_cov, alpha=alpha, 
+                     loose=0.2, depth=0.8, weights=weights)
+        return stc    
+
     def _saving(self, src, stc):
         print("Saving...")
         #TODO overwrite ?
