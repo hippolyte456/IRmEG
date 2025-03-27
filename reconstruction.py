@@ -1,16 +1,5 @@
 #! /usr/bin/env python
 
-import os
-import argparse
-import pdb
-
-from typing import List
-
-from mne_bids import BIDSPath
-import mne
-from mne.minimum_norm import (make_inverse_operator, apply_inverse, write_inverse_operator)
-from mne.inverse_sparse import mixed_norm 
-from mne import read_cov
 
 """
 Reconstructeur de sources MEG basé sur MNE-Python.
@@ -38,6 +27,21 @@ python reconstructer.py sub-01 ses-01
 ```
 """
 
+import os
+import argparse
+import pdb
+
+from typing import List
+
+from mne_bids import BIDSPath
+import mne
+from mne.minimum_norm import (make_inverse_operator, apply_inverse, write_inverse_operator)
+from mne import read_cov
+
+from mne.inverse_sparse import mixed_norm 
+import numpy as np
+import nibabel as nib
+
  
 class reconstructer:
     
@@ -54,13 +58,34 @@ class reconstructer:
         self.snr = 3.
         self.lambda2 = 1. / self.snr ** 2
     
-    def _extract_fmri(self, fmri_path:BIDSPath):
-        # check if a fmri_path is set
-        if self.fmri_path is not None:
-            self.fmri_space = None #what funct to use ?
-        else:
-            #erreur
+    #TODO test this extraction
+    def _extract_fmri(self, fmri_path: BIDSPath):
+        """Extrait une carte de poids fMRI depuis un fichier NIfTI 
+        et la projette sur les sources MEG."""
+        
+        if fmri_path is None:
             raise Exception('fmri_path not set')
+
+        # Charger l'image fMRI au format NIfTI
+        img = nib.load(fmri_path.fpath)  
+        fmri_data = img.get_fdata()  # Récupérer les valeurs du volume
+
+        # Vérifier si c'est un volume 3D (statique) ou 4D (dynamique)
+        if fmri_data.ndim == 4:
+            fmri_data = np.mean(fmri_data, axis=-1)  # Moyenne sur le temps
+
+        # Récupérer les sources MEG
+        src = mne.read_source_spaces(self.src_fname)
+
+        # Projection fMRI → espace source MEG (utilise un atlas ou un algorithme de projection)
+        self.fmri_space = mne.extract_label_time_course(fmri_data, src, mode='auto')
+
+        # Transformer en poids pour `mixed_norm()` (vecteur 1D)
+        self.weights = np.ravel(self.fmri_space)  # Assure que ça correspond à `n_sources`
+
+        assert self.weights.shape[0] == src[0]['nuse'], "Mismatch between fMRI and MEG source spaces"
+        
+        return self.weights
             
     
     def _path_settings(self,evoked_to_process:BIDSPath):
@@ -78,6 +103,7 @@ class reconstructer:
         print("Computing source space...")
         src = mne.setup_source_space(subject=self.subject, spacing='oct6', subjects_dir=self.subjects_dir, add_dist=False) 
         return src
+
   
     def _compute_forward(self, src):
         print("Computing forward solution...")
@@ -94,6 +120,7 @@ class reconstructer:
         fwd = mne.pick_types_forward(fwd, meg=True, eeg=False)
         return fwd
  
+ 
     def _compute_inverse_operation(self,fwd, noise_cov, use_fmri_prior=False):
         print("Inverse operator...")
         inverse_operator = make_inverse_operator(self.info, fwd, noise_cov, loose=0.2, depth=0.8)
@@ -109,12 +136,14 @@ class reconstructer:
                      loose=0.2, depth=0.8, weights=weights)
         return stc    
 
+
     def _saving(self, src, stc):
         print("Saving...")
         #TODO overwrite ?
         mne.write_source_spaces(self.src_fname, src) # Sauvegarder le src : OUTPUT 2
         stc.save(self.stc_fname) # Sauvegarder le STC : OUTPUT 3
         #TODO save les configs avec !
+  
     
     def reconstruct(self) -> None:
         #TODO enlever les self des lignes suivantes
@@ -138,8 +167,8 @@ class reconstructer:
         self._saving(src,stc)
 
         print("Done.")
-
-   
+ 
+ 
     def reconstruct_all(self):
         self.evoked_type = 'ERP'
         
@@ -161,7 +190,7 @@ class reconstructer:
         
         
        
-  
+
 def main():
     ####------------- set args and paths & configs ----------------####
     parser = argparse.ArgumentParser()
